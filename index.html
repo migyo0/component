@@ -84,6 +84,7 @@
   body {
     margin: 0;
     min-height: 100vh;
+    min-height: 100dvh;
     display: grid;
     place-items: center;
     background: var(--bg);
@@ -92,10 +93,20 @@
   }
 
   /* ---------- Component shell (layout only) ---------- */
+  /* The component is always built at its full size. When the window is narrower
+     than that, the script scales the whole thing down as one piece (keeping at
+     least 16px clear on each side). The stage is sized to the scaled result so the
+     page layout matches what you see. */
+  .stage {
+    position: relative;
+    flex: none;
+  }
+
   .glass-tabs {
     --gap: -12px; /* space between tabs (negative = overlap) */
     position: relative;
-    width: min(590px, 92vw);
+    width: 590px;
+    transform-origin: 0 0;
     padding: 8px;
     isolation: isolate;
     touch-action: pan-y;
@@ -304,11 +315,6 @@ box-shadow:
     transition: transform 0.45s cubic-bezier(0.34, 1.4, 0.5, 1);
   }
 
-  @media (max-width: 480px) {
-    .tab { font-size: 15px; gap: 8px; padding: 12px 4px 10px; }
-    .icon { width: 36px; height: 36px; }
-  }
-
   @media (prefers-reduced-motion: reduce) {
     .tab, .icon { transition: none; }
   }
@@ -318,6 +324,7 @@ box-shadow:
 
   <button class="theme-toggle" type="button" aria-label="Toggle light/dark theme">🌙 Dark</button>
 
+  <div class="stage">
   <nav class="glass-tabs" aria-label="Main">
     <div class="bar pill-surface" aria-hidden="true"><span class="pill-shadow"></span><span class="pill-stroke glow"></span><span class="pill-stroke soft"></span><span class="pill-stroke"></span></div>
 
@@ -355,6 +362,7 @@ box-shadow:
       </button>
     </div>
   </nav>
+  </div>
 
 <script>
 (() => {
@@ -373,6 +381,7 @@ box-shadow:
   const SQUISH_MAX_H = 0.12; // …and up to 12% shorter
   const PAD = 8;
 
+  const stage   = document.querySelector(".stage");
   const nav     = document.querySelector(".glass-tabs");
   const bar     = nav.querySelector(".bar");
   const lens    = nav.querySelector(".lens");
@@ -542,6 +551,7 @@ box-shadow:
     blue.style.transform = "none";
     blueParts.forEach(part => part.tab.style.transform = "none");
     const br = blue.getBoundingClientRect();
+    const z = 1 / zs;                 // rects are in scaled screen px; convert back to design px
     for (const part of blueParts) {
       const cs = getComputedStyle(part.tab);
       const ir = part.svg.getBoundingClientRect();
@@ -550,11 +560,11 @@ box-shadow:
       const tr = range.getBoundingClientRect();
       const tb = part.tab.getBoundingClientRect();
       Object.assign(part, {
-        center: { x: tb.left - br.left + tb.width / 2, y: tb.top - br.top + tb.height / 2 },
+        center: { x: (tb.left - br.left + tb.width / 2) * z, y: (tb.top - br.top + tb.height / 2) * z },
         color: cs.color, weight: cs.fontWeight, size: parseFloat(cs.fontSize), family: cs.fontFamily,
-        icon: { x: ir.left - br.left, y: ir.top - br.top, w: ir.width, h: ir.height },
-        label: { x: tr.left - br.left, y: tr.top - br.top, h: tr.height },
-        bw: br.width, bh: br.height
+        icon: { x: (ir.left - br.left) * z, y: (ir.top - br.top) * z, w: ir.width * z, h: ir.height * z },
+        label: { x: (tr.left - br.left) * z, y: (tr.top - br.top) * z, h: tr.height * z },
+        bw: br.width * z, bh: br.height * z
       });
     }
     blue.style.transform = prev;
@@ -702,13 +712,17 @@ sg.addColorStop(0, C.strokeA);
     if (key === lastKey) return;
     lastKey = key;
 
-    const dpr = canvasDpr = Math.min(window.devicePixelRatio || 1, 3);
+    // dprDev = real screen pixels per CSS px. The component may be scaled down, so
+    // dpr (canvas pixels per design px) is dprDev * zs: one canvas pixel is then
+    // exactly one screen pixel, and the glass stays sharp at any size.
+    const dprDev = Math.min(window.devicePixelRatio || 1, 3);
+    const dpr = canvasDpr = dprDev * zs;
 
     // Snap the canvas to the screen's pixel grid. Everything is then drawn at the
     // same device pixels every frame, however the lens moves, so the icons and
     // text inside never shimmer or shuffle by fractions of a pixel.
-    const cLeft = Math.floor((navVX + lx) * dpr) / dpr - navVX;   // canvas origin, container coords
-    const cTop  = Math.floor((navVY + ly) * dpr) / dpr - navVY;
+    const cLeft = (Math.floor((navVX + lx * zs) * dprDev) / dprDev - navVX) / zs;   // canvas origin, container coords
+    const cTop  = (Math.floor((navVY + ly * zs) * dprDev) / dprDev - navVY) / zs;
     const shiftX = lx - cLeft, shiftY = ly - cTop;
     const band0 = clamp(GLASS_DEPTH, 1, Math.min(lw, lh) / 2);
     const reach = GLASS_BEND * pc;
@@ -771,8 +785,8 @@ sg.addColorStop(0, C.strokeA);
       // Snap origins to the screen's device pixel grid (the canvas itself is already
       // aligned to it), so icon and text always land on whole pixels and can't
       // flicker between two neighbouring pixels as the pop shrinks away.
-      const snapX = v => Math.round((navVX + v) * dpr) / dpr - navVX;
-      const snapY = v => Math.round((navVY + v) * dpr) / dpr - navVY;
+      const snapX = v => (Math.round((navVX + v * zs) * dprDev) / dprDev - navVX) / zs;
+      const snapY = v => (Math.round((navVY + v * zs) * dprDev) / dprDev - navVY) / zs;
 
       sctx.save();
       sctx.translate(snapX(toX(part.icon.x)), snapY(toY(part.icon.y)));
@@ -823,6 +837,19 @@ sg.addColorStop(0, C.strokeA);
   }
   addEventListener("scroll", () => { measureNavPos(); render(); }, { passive: true });
   addEventListener("resize", measureNavPos);
+
+  /* ---- Fit: the component keeps its full design size (DESIGN_W) and is scaled down
+     as a whole when the window is narrower, leaving MARGIN clear on both sides. ---- */
+  const DESIGN_W = 590;
+  const MARGIN = 16;
+  let zs = 1;                       // current scale of the whole component (never above 1)
+  function fit() {
+    const avail = document.documentElement.clientWidth - 2 * MARGIN;
+    zs = clamp(avail / DESIGN_W, 0.05, 1);
+    nav.style.transform = zs === 1 ? "" : `scale(${zs})`;
+    stage.style.width  = `${DESIGN_W * zs}px`;
+    stage.style.height = `${nav.offsetHeight * zs}px`;
+  }
 
   let W, H, gap, slotW, slotH;
   function measure() {
@@ -935,7 +962,7 @@ sideStroke: v("--pill-side-stroke"), sideStrokeAlpha: parseFloat(v("--pill-side-
     // which reads as jitter. Snapped edges only ever step one way as it shrinks.
     {
       const d = window.devicePixelRatio || 1;
-      const snap = (v, o) => Math.round((o + v) * d) / d - o;
+      const snap = (v, o) => (Math.round((o + v * zs) * d) / d - o) / zs;
       const L = snap(lx, navVX), R = snap(lx + lw, navVX);
       const T = snap(ly, navVY), B = snap(ly + lh, navVY);
       lx = L; lw = Math.max(1, R - L);
@@ -1074,7 +1101,7 @@ sideStroke: v("--pill-side-stroke"), sideStrokeAlpha: parseFloat(v("--pill-side-
   function indexAt(clientX) {
     const rect = nav.getBoundingClientRect();
     const s = 1 + BAR_POP * softEnd(p);
-    const local = (clientX - rect.left - W / 2) / s + W / 2;
+    const local = ((clientX - rect.left) / zs - W / 2) / s + W / 2;
     return clamp((local - PAD - slotW / 2) / (slotW + gap), 0, n - 1);
   }
 
@@ -1093,11 +1120,11 @@ sideStroke: v("--pill-side-stroke"), sideStrokeAlpha: parseFloat(v("--pill-side-
 
   nav.addEventListener("pointermove", e => {
     if (!pressed) return;
-    const px = e.clientX - nav.getBoundingClientRect().left;
+    const px = (e.clientX - nav.getBoundingClientRect().left) / zs;
     if (!dragging && Math.abs(e.clientX - startX) > 6) {
       dragging = true;
       // keep the exact spot you grabbed under the pointer (measured from where you pressed)
-      grabOffset = lastCx - (startX - nav.getBoundingClientRect().left);
+      grabOffset = lastCx - (startX - nav.getBoundingClientRect().left) / zs;
     }
     if (dragging) {
       const cx = px + grabOffset;
@@ -1137,9 +1164,10 @@ sideStroke: v("--pill-side-stroke"), sideStrokeAlpha: parseFloat(v("--pill-side-
     if (e.key === "End")  select(n - 1, true);
   });
 
-  new ResizeObserver(() => { measure(); render(); }).observe(nav);
-  measure();
-  render();
+  const refit = () => { fit(); measure(); render(); };
+  new ResizeObserver(refit).observe(nav);   // e.g. fonts finishing loading
+  addEventListener("resize", refit);        // window resize and browser zoom
+  refit();
 })();
 </script>
 </body>
