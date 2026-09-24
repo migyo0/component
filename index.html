@@ -109,10 +109,14 @@
     transform-origin: 0 0;
     padding: 8px;
     isolation: isolate;
-    touch-action: pan-y;
+    /* A touch that starts on the component never scrolls the page, so holding
+       and dragging the selection can't be interrupted by a scroll. */
+    touch-action: none;
+    overscroll-behavior: contain;
     cursor: pointer;
     -webkit-user-select: none;
     user-select: none;
+    -webkit-touch-callout: none;   /* no iOS long-press callout */
   }
 
   /* ---------- Shared glass pill look (outer bar + its unscaled copy) ---------- */
@@ -1151,6 +1155,13 @@ sideStroke: v("--pill-side-stroke"), sideStrokeAlpha: parseFloat(v("--pill-side-
     lensCycle = false; qTarget = 0;
     kick();
   });
+
+  /* ---- No scrolling or menus while the component is held ---- */
+  // touch-action: none (in the CSS) already blocks touch scrolling; these cover
+  // older browsers, mouse-wheel scrolling mid-hold, and the long-press menu.
+  nav.addEventListener("touchmove", e => { if (pressed && e.cancelable) e.preventDefault(); }, { passive: false });
+  nav.addEventListener("wheel", e => { if (pressed) e.preventDefault(); }, { passive: false });
+  nav.addEventListener("contextmenu", e => e.preventDefault());
 
   /* ---- Keyboard ---- */
   tabs.forEach((t, i) => t.addEventListener("click", e => {
