@@ -1,0 +1,1146 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Liquid Glass Tabs</title>
+<style>
+  :root {
+    /* ---- dark theme (default) ---- */
+    --bg: #000000;
+    --accent: #4a9bff;
+    --label: #ffffff;
+
+    /* pill fill: translucent white over the page background */
+    --pill-fill-a: rgba(255,255,255,0.1216);
+    --pill-fill-b: rgba(255,255,255,0.1255);
+    /* top/bottom stroke: dark→lighter→dark gradient, plus a soft glow under it */
+    --pill-stroke-a: #393939;
+    --pill-stroke-b: #4A4A4A;
+    --pill-stroke-glow: #565656;      /* pre-brightened stand-in for --pill-stroke-a, used by canvas */
+    --pill-stroke-glow-css: brightness(1.5);
+    --pill-glow-thickness: 2px;
+    /* soft ring shadow cast below the pill (light mode only; off in dark) */
+    --pill-shadow-rgb: 0,0,0;
+    --pill-shadow-alpha: 0;
+    --pill-shadow-ring: 6px;      /* thickness of the ring before blurring */
+    --pill-shadow-blur: 10px;     /* how soft it is */
+    --pill-shadow-drop: 8px;      /* how far below the pill it sits */
+    --lens-shadow-inset: 12px;    /* ring pulled in so its soft blur ends about where the pill does */
+    --lens-shadow-drop: 30px;     /* the held selection pill's ring shadow sits well below it, seen through its glass */
+    /* outer side stroke + inner ring: both darken, so they work the same in both themes */
+--pill-side-stroke-rgb: 0,0,0;
+    --pill-side-stroke-alpha: 0.18;
+    --pill-side-stroke: rgba(var(--pill-side-stroke-rgb),var(--pill-side-stroke-alpha));
+    --pill-ring-rgb: 0,0,0;
+    --pill-ring: rgba(var(--pill-ring-rgb),0.12);
+    /* selection pill at rest, and its glow when held */
+    --lens-rest-fill: rgba(0,0,0,0.3);
+    --lens-held-stroke: rgba(255,255,255,0.20);
+  }
+
+  :root[data-theme="light"] {
+    --bg: #EDEDED;                    /* very light grey */
+    --label: #1C1C1E;
+
+    /* pill fill: #F9F9F9 at the top → #FDFDFC at the bottom, both at 10% opacity */
+    --pill-fill-a: rgba(249,249,249,0.1);
+    --pill-fill-b: rgba(253,253,252,0.1);
+    /* stroke flips to light-on-the-fill, darker at centre for definition, plus a soft glow */
+    --pill-stroke-a: #FFFFFF;
+    --pill-stroke-b: #FFFFFF;
+    --pill-stroke-glow: rgba(255,255,255,0.5);
+    --pill-stroke-glow-css: opacity(0.5);    /* white glow at half strength */
+    --pill-glow-thickness: 6px;              /* wider band so the blurred glow still reads as white */
+--pill-side-stroke-rgb: 0,0,0;
+    --pill-side-stroke-alpha: 0.10;
+    --pill-side-stroke: rgba(var(--pill-side-stroke-rgb),var(--pill-side-stroke-alpha));
+    --pill-ring-rgb: 0,0,0;
+    --pill-ring: rgba(var(--pill-ring-rgb),0);      /* replaced by the dropped ring shadow below */
+    --pill-shadow-alpha: 0.10;
+    --lens-rest-fill: rgba(0,0,0,0.10);
+    --lens-held-stroke: rgba(255,255,255,0.85);
+  }
+
+  /* theme toggle, top-right corner */
+  .theme-toggle {
+    position: fixed;
+    top: 16px;
+    right: 16px;
+    z-index: 10;
+    appearance: none;
+    border: 1px solid rgba(127,127,127,0.35);
+    background: rgba(127,127,127,0.12);
+    color: var(--label);
+    font: inherit;
+    font-size: 13px;
+    padding: 8px 14px;
+    border-radius: 999px;
+    cursor: pointer;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    min-height: 100vh;
+    display: grid;
+    place-items: center;
+    background: var(--bg);
+    transition: background 0.25s ease;
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", "Segoe UI", Roboto, sans-serif;
+  }
+
+  /* ---------- Component shell (layout only) ---------- */
+  .glass-tabs {
+    --gap: -12px; /* space between tabs (negative = overlap) */
+    position: relative;
+    width: min(590px, 92vw);
+    padding: 8px;
+    isolation: isolate;
+    touch-action: pan-y;
+    cursor: pointer;
+    -webkit-user-select: none;
+    user-select: none;
+  }
+
+  /* ---------- Shared glass pill look (outer bar + its unscaled copy) ---------- */
+  .pill-surface {
+    border-radius: 999px;
+    /* translucent white; on black this is #1F1F1F at the top → #202020 at the bottom */
+background: linear-gradient(180deg, var(--pill-fill-a) 0%, var(--pill-fill-b) 100%);
+    backdrop-filter: blur(20px) saturate(160%);
+    -webkit-backdrop-filter: blur(20px) saturate(160%);
+    box-shadow:
+      -2px 0 0 var(--pill-side-stroke),       /* outer side stroke, left */
+      2px 0 0 var(--pill-side-stroke);        /* outer side stroke, right */
+    isolation: isolate;
+  }
+
+  /* top + bottom stroke: 2px, #393939 at the sides → #4A4A4A in the centre,
+     tapering to nothing around the rounded ends.
+     A crisp copy keeps the exact colours; a blurred copy underneath softens it inward only. */
+  .pill-stroke {
+    position: absolute;
+    inset: 0;
+    z-index: 1; /* above the ring shadow so it keeps its exact colours */
+    container-type: size; /* lets the gradient know the pill's height (50cqh = end-curve radius) */
+    border-radius: inherit;
+    pointer-events: none;
+  }
+  .pill-stroke.soft {
+    filter: blur(0.8px);
+    clip-path: inset(0 round 999px); /* trims the blur so it only spreads inward */
+  }
+  /* an extra, heavily blurred copy of the same stroke: a soft glow inside the edge */
+  .pill-stroke.glow::before { padding: var(--pill-glow-thickness) 0; }
+  .pill-stroke.glow {
+    filter: blur(8px) var(--pill-stroke-glow-css);  /* extra brightness makes up for what the wide blur spreads thin */
+    clip-path: inset(0 round 999px);
+  }
+  .pill-stroke::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    padding: 2px 0;
+    /* #4A4A4A along the whole flat run, fading to #393939 around each rounded end */
+background: linear-gradient(90deg,
+      var(--pill-stroke-a) 0%,
+      var(--pill-stroke-b) 50cqh,
+      var(--pill-stroke-b) calc(100% - 50cqh),
+      var(--pill-stroke-a) 100%);
+    -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor;
+    mask: linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0);
+  }
+
+  /* faded ring shadow, straddling the edge so it shows through the glass */
+  .pill-surface::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    box-shadow:
+      0 0 14px var(--pill-ring),
+      inset 0 0 14px var(--pill-ring);
+    pointer-events: none;
+  }
+
+  /* the outer pill (scales on press, gets a hole where the lens is) */
+  /* Ring shadow: a blurred outline (not a filled shape), dropped below the pill.
+     It shows through the translucent fill as a soft band just inside the lower
+     edge, and underneath the pill as its drop shadow, with nothing in the middle. */
+  .pill-shadow {
+    position: absolute;
+    inset: calc(var(--pill-shadow-ring) / -2);
+    border-radius: 999px;
+    border: var(--pill-shadow-ring) solid rgba(var(--pill-shadow-rgb), var(--pill-shadow-alpha));
+    filter: blur(var(--pill-shadow-blur));
+    transform: translateY(var(--pill-shadow-drop));
+    pointer-events: none;
+  }
+
+  /* the same ring shadow, cast by the selection pill while it's held */
+  /* The held pill's ring shadow, outside its glass (the part inside is drawn by
+     the glass canvas). Same ring, blur and drop, so the two meet seamlessly. */
+  .lens-shadow {
+    z-index: 1;
+    inset: auto;
+    opacity: 0;
+    transform: translateY(var(--lens-shadow-drop));
+  }
+
+  .bar {
+    position: absolute;
+    inset: 0;
+    z-index: 0;
+    will-change: transform;
+  }
+
+  /* ---------- Selected lens ---------- */
+  .lens {
+    position: absolute;
+    left: 0;
+    top: 0;
+    z-index: 3;
+    border-radius: 999px;
+    overflow: hidden;
+    pointer-events: none;
+  }
+
+  .lens-content {
+    position: absolute;
+    inset: 0;
+  }
+
+  /* while held, the lens contents are redrawn here with the glass bend */
+  .lens-canvas {
+    position: absolute;
+    left: 0;
+    top: 0;
+    display: none;
+  }
+
+  /* unscaled copy of the outer pill, seen through the lens */
+  .lens-copy {
+    position: absolute;
+    visibility: hidden;
+  }
+
+  .lens-dark,
+  .lens-glass {
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+  }
+
+  /* resting look: recessed dark pill */
+  .lens-dark {
+    background: var(--lens-rest-fill);
+  }
+
+  /* pressed look: same glass as the outer pill */
+  .lens-glass {
+    opacity: 0;
+    background: none;
+box-shadow:
+      inset 0 2px 3px var(--lens-held-stroke),   /* top, softly blurred */
+      inset 0 -2px 3px var(--lens-held-stroke),  /* bottom, softly blurred */
+      inset 0 0 14px var(--pill-ring);
+  }
+
+  /* ---------- Tabs ---------- */
+  .tabs {
+    position: relative;
+    z-index: 2;
+    display: flex;
+    will-change: transform;
+  }
+
+  .tab {
+    flex: 1 1 0;
+    min-width: 0;
+    appearance: none;
+    border: 0;
+    background: none;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 12px;
+    padding: 16px 8px 14px;
+    border-radius: 999px;
+    color: var(--label);
+    font: inherit;
+    font-size: 20px;
+    font-weight: 500;
+    letter-spacing: -0.01em;
+    cursor: pointer;
+    transition: color 0.25s ease;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  .tab + .tab { margin-left: var(--gap); }
+
+  .tab:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -4px;
+  }
+
+  /* blue copy of the icons + text, only visible inside the lens */
+  .tabs-blue {
+    position: absolute;
+    left: 0;
+    top: 0;
+    transform-origin: center;
+  }
+  .tabs-blue .tab { color: var(--accent); transition: none; }
+
+  .icon {
+    width: 50px;
+    height: 50px;
+    display: block;
+    fill: currentColor;
+    transition: transform 0.45s cubic-bezier(0.34, 1.4, 0.5, 1);
+  }
+
+  @media (max-width: 480px) {
+    .tab { font-size: 15px; gap: 8px; padding: 12px 4px 10px; }
+    .icon { width: 36px; height: 36px; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .tab, .icon { transition: none; }
+  }
+</style>
+</head>
+<body>
+
+  <button class="theme-toggle" type="button" aria-label="Toggle light/dark theme">🌙 Dark</button>
+
+  <nav class="glass-tabs" aria-label="Main">
+    <div class="bar pill-surface" aria-hidden="true"><span class="pill-shadow"></span><span class="pill-stroke glow"></span><span class="pill-stroke soft"></span><span class="pill-stroke"></span></div>
+
+    <span class="pill-shadow lens-shadow" aria-hidden="true"></span>
+    <div class="lens" aria-hidden="true">
+      <!-- everything in here gets bent by the glass edge while held -->
+      <div class="lens-content">
+        <div class="lens-copy pill-surface"><span class="pill-shadow"></span><span class="pill-stroke glow"></span><span class="pill-stroke soft"></span><span class="pill-stroke"></span></div>
+        <div class="lens-dark"></div>
+      </div>
+      <canvas class="lens-canvas"></canvas>
+      <div class="lens-glass"></div>
+    </div>
+
+    <div class="tabs" role="tablist">
+      <button class="tab" role="tab" aria-selected="true" tabindex="0">
+        <svg class="icon" viewBox="0 0 50 50" aria-hidden="true">
+          <rect x="1" y="1" width="48" height="48" rx="7" />
+        </svg>
+        Collection
+      </button>
+
+      <button class="tab" role="tab" aria-selected="false" tabindex="-1">
+        <svg class="icon" viewBox="0 0 50 50" aria-hidden="true">
+          <path d="M20.2 6.5a5.5 5.5 0 0 1 9.6 0l17.6 30.8A5.5 5.5 0 0 1 42.6 45.5H7.4a5.5 5.5 0 0 1-4.8-8.2Z" />
+        </svg>
+        Library
+      </button>
+
+      <button class="tab" role="tab" aria-selected="false" tabindex="-1">
+        <svg class="icon" viewBox="0 0 50 50" aria-hidden="true">
+          <circle cx="25" cy="25" r="24" />
+        </svg>
+        Profile
+      </button>
+    </div>
+  </nav>
+
+<script>
+(() => {
+  /* ---- Tuning ---- */
+  const BAR_POP    = 0.06;  // outer pill + icons + text grow by 6% while held
+  const LENS_POP_W = 0.10;  // lens grows a further 10% wide…
+  const LENS_POP_H = 0.35;  // …and 35% tall, so it bulges past the pill
+  const INNER_SHRINK = 0.05; // outer pill seen inside the lens gets 5% shorter (width unchanged)
+  const REST_FILL = 0.10;    // how much of the outer pill's fill shows through the resting lens
+  const GLASS_DEPTH = 20;   // px in from the edge that the bend reaches
+  const GLASS_BEND  = 14;   // strength: at the very edge you see what's this many px in (kept just under GLASS_DEPTH)
+  const GLASS_CHROMA = 3;   // chromatic aberration: px the red and blue channels split apart at the very edge
+  const CHROMA_BLUE  = 0.5;  // how far the blue/violet end of the fringe spreads, relative to the red end
+  const INNER_POP    = 0.12; // icons + text inside the held pill grow a further 12%
+  const SQUISH_MAX_W = 0.22; // fast slides stretch the pill up to 22% wider…
+  const SQUISH_MAX_H = 0.12; // …and up to 12% shorter
+  const PAD = 8;
+
+  const nav     = document.querySelector(".glass-tabs");
+  const bar     = nav.querySelector(".bar");
+  const lens    = nav.querySelector(".lens");
+  const copy    = nav.querySelector(".lens-copy");
+  const dark    = nav.querySelector(".lens-dark");
+  const glass   = nav.querySelector(".lens-glass");
+  const lensContent = nav.querySelector(".lens-content");
+  const lensCanvas = nav.querySelector(".lens-canvas");
+  const lensShadow = nav.querySelector(".lens-shadow");
+  const content = nav.querySelector(".tabs");
+  const tabs    = [...nav.querySelectorAll(".tab")];
+
+  // blue duplicate of the icons + text, placed inside the lens
+  const blue = content.cloneNode(true);
+  blue.className = "tabs tabs-blue";
+  blue.removeAttribute("role");
+  blue.inert = true;
+  blue.querySelectorAll(".tab").forEach(t => {
+    t.removeAttribute("role"); t.removeAttribute("aria-selected"); t.tabIndex = -1;
+  });
+  lensContent.appendChild(blue);
+  const blueTabs = [...blue.querySelectorAll(".tab")];
+  const n = tabs.length;
+  const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)");
+
+  /* ---- Glass bend (canvas, works in Safari/WebKit, Chrome and Firefox) ----
+     While held, the lens contents (outer pill, dark fill, blue icons + text) are
+     drawn to an offscreen canvas, then copied into the lens with every pixel in
+     the rim sampling from further IN along the pill's surface: gently at the
+     inner edge of the rim, strongly at the very edge. Content near the edge is
+     stretched outward and bends around the curve, like a thick glass capsule. */
+  const srcCanvas = document.createElement("canvas");
+  const sctx = srcCanvas.getContext("2d");
+
+  /* The bend itself runs on the GPU (WebGL), so it costs well under a
+     millisecond a frame and the held pill moves smoothly. */
+  const gl = lensCanvas.getContext("webgl", { premultipliedAlpha: true, alpha: true, antialias: false });
+  let glReady = false, glTex = null, U = {};
+  // add ?nogl to the page URL to preview the no-WebGL version in any browser
+  const forceNoGL = /[?&]nogl(?:[=&]|$)/.test(location.search);
+  function setupGL() {
+    glReady = false;
+    if (!gl || forceNoGL || gl.isContextLost()) return;
+    const vs = `attribute vec2 aPos; void main(){ gl_Position = vec4(aPos, 0.0, 1.0); }`;
+    const fs = `
+      precision highp float;
+      uniform sampler2D uTex;
+      uniform vec2  uTexSize;   // source bitmap size
+      uniform vec2  uLens;      // lens size, CSS px
+      uniform float uDpr, uO, uTop, uBand, uG, uCa, uBlue;
+      uniform vec2  uShift;     // lens origin minus the pixel-snapped canvas origin
+      vec4 texel(vec2 pt) { return texture2D(uTex, ((pt + uShift) * uDpr + uO) / uTexSize); }
+      float lookIn(float b, float u, float x) {
+        float bb = clamp(b, 0.0, uBand * 0.95);
+        float n = uBand / (uBand - bb);
+        return bb + (uBand - bb) * pow(max(x, 1e-6), n) - u;
+      }
+      void main() {
+        vec2 p = vec2(gl_FragCoord.x, uTop - gl_FragCoord.y) / uDpr - uShift;   // lens px, y down
+        float r = min(uLens.x, uLens.y) * 0.5;
+        vec2 q = vec2(clamp(p.x, r, uLens.x - r), uLens.y * 0.5);
+        vec2 nrm = p - q;
+        float dist = max(length(nrm), 1e-4);
+        float inset = r - dist;
+        if (inset >= uBand || uG < 0.01) { gl_FragColor = texel(p); return; }
+        vec2 dir = nrm / dist;
+        float u = max(inset, 0.0);
+        float x = u / uBand;
+        // Spectral dispersion: sample the rim at several bend amounts, each tinted
+        // a colour of the spectrum (red, orange, yellow, green, cyan, blue, violet),
+        // so edges split into a full rainbow instead of just red/green/blue.
+        vec3 sumC = vec3(0.0), sumW = vec3(0.0);
+        float a = 0.0;
+        for (int i = 0; i < 9; i++) {
+          float t = float(i) / 8.0;                              // 0 = red … 1 = violet
+          vec3 w = clamp(abs(fract(t * 0.8 + vec3(0.0, 2.0 / 3.0, 1.0 / 3.0)) * 6.0 - 3.0) - 1.0, 0.0, 1.0);
+          float spread = 2.0 * t - 1.0;                          // -1 red end … +1 violet end
+          if (spread > 0.0) spread *= uBlue;                     // pull the blue side in
+          vec4 c = texel(p - dir * lookIn(uG + uCa * spread, u, x));
+          sumC += c.rgb * w;
+          sumW += w;
+          a = max(a, c.a);
+        }
+        gl_FragColor = vec4(sumC / sumW, a);
+      }`;
+    const sh = (type, src) => { const o = gl.createShader(type); gl.shaderSource(o, src); gl.compileShader(o);
+      return gl.getShaderParameter(o, gl.COMPILE_STATUS) ? o : null; };
+    const v = sh(gl.VERTEX_SHADER, vs), f = sh(gl.FRAGMENT_SHADER, fs);
+    if (!v || !f) return;
+    const prog = gl.createProgram();
+    gl.attachShader(prog, v); gl.attachShader(prog, f); gl.linkProgram(prog);
+    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) return;
+    gl.useProgram(prog);
+    const buf = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+    const loc = gl.getAttribLocation(prog, "aPos");
+    gl.enableVertexAttribArray(loc);
+    gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+    for (const name of ["uTex", "uTexSize", "uLens", "uDpr", "uO", "uTop", "uBand", "uG", "uCa", "uBlue", "uShift"])
+      U[name] = gl.getUniformLocation(prog, name);
+    glTex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, glTex);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, true);
+    gl.uniform1i(U.uTex, 0);
+    gl.clearColor(0, 0, 0, 0);
+    glReady = true;
+  }
+  setupGL();
+
+  // The GPU can take the WebGL context away at any time (commonly on iPhone when
+  // the tab goes to the background). Switch to the DOM version straight away,
+  // then back to the glass once the browser hands the context back.
+  lensCanvas.addEventListener("webglcontextlost", e => {
+    e.preventDefault();               // lets the browser restore it later
+    glReady = false;
+    render();
+  });
+  lensCanvas.addEventListener("webglcontextrestored", () => {
+    setupGL();
+    lastKey = "";
+    render();
+  });
+  let lastKey = "";
+
+  function svgShapeToPath(el) {
+    const n = el.tagName.toLowerCase();
+    const num = a => parseFloat(el.getAttribute(a)) || 0;
+    if (n === "path") return el.getAttribute("d");
+    if (n === "circle") {
+      const cx = num("cx"), cy = num("cy"), r = num("r");
+      return `M${cx - r} ${cy} A${r} ${r} 0 1 0 ${cx + r} ${cy} A${r} ${r} 0 1 0 ${cx - r} ${cy} Z`;
+    }
+    if (n === "rect") {
+      const x = num("x"), y = num("y"), w = num("width"), h = num("height"), r = num("rx");
+      return `M${x + r} ${y} H${x + w - r} A${r} ${r} 0 0 1 ${x + w} ${y + r} V${y + h - r} ` +
+             `A${r} ${r} 0 0 1 ${x + w - r} ${y + h} H${x + r} A${r} ${r} 0 0 1 ${x} ${y + h - r} ` +
+             `V${y + r} A${r} ${r} 0 0 1 ${x + r} ${y} Z`;
+    }
+    return "";
+  }
+
+  // cached per blue tab: icon shape, label text node, and resting layout
+  let blueParts = null;
+  let blueLayoutDirty = true;
+  function getBlueParts() {
+    if (!blueParts) blueParts = [...blue.querySelectorAll(".tab")].map(tab => {
+      const svg = tab.querySelector("svg");
+      const vb = svg.viewBox.baseVal;
+      const path = new Path2D([...svg.children].map(svgShapeToPath).join(" "));
+      const textNode = [...tab.childNodes].find(nd => nd.nodeType === 3 && nd.textContent.trim());
+      return { tab, svg, vb, path, textNode, text: textNode.textContent.trim() };
+    });
+    if (blueLayoutDirty) measureBlueLayout();
+    return blueParts;
+  }
+
+  // Read icon/text positions once (unscaled, relative to the blue layer) so the
+  // animation never has to query layout mid-frame.
+  function measureBlueLayout() {
+    const prev = blue.style.transform;
+    const prevTabs = blueParts.map(part => part.tab.style.transform);
+    blue.style.transform = "none";
+    blueParts.forEach(part => part.tab.style.transform = "none");
+    const br = blue.getBoundingClientRect();
+    for (const part of blueParts) {
+      const cs = getComputedStyle(part.tab);
+      const ir = part.svg.getBoundingClientRect();
+      const range = document.createRange();
+      range.selectNodeContents(part.textNode);
+      const tr = range.getBoundingClientRect();
+      const tb = part.tab.getBoundingClientRect();
+      Object.assign(part, {
+        center: { x: tb.left - br.left + tb.width / 2, y: tb.top - br.top + tb.height / 2 },
+        color: cs.color, weight: cs.fontWeight, size: parseFloat(cs.fontSize), family: cs.fontFamily,
+        icon: { x: ir.left - br.left, y: ir.top - br.top, w: ir.width, h: ir.height },
+        label: { x: tr.left - br.left, y: tr.top - br.top, h: tr.height },
+        bw: br.width, bh: br.height
+      });
+    }
+    blue.style.transform = prev;
+    blueParts.forEach((part, i) => part.tab.style.transform = prevTabs[i]);
+    blueLayoutDirty = false;
+  }
+
+  // The outer pill copy is drawn once into a cache and then just stamped each
+  // frame (scaled / faded), since its blur shadow is the slowest thing to draw.
+  const pillCache = document.createElement("canvas");
+  const PC_PAD = 64;
+  let pillCacheKey = "";
+  function drawOuterPillCopy(ctx, k, alpha) {
+    const dpr = canvasDpr;
+    const key = [W, H, dpr].join();
+    if (key !== pillCacheKey) {
+      pillCacheKey = key;
+      pillCache.width = Math.ceil((W + 2 * PC_PAD) * dpr);
+      pillCache.height = Math.ceil((H + 2 * PC_PAD) * dpr);
+      const c = pillCache.getContext("2d");
+      c.setTransform(dpr, 0, 0, dpr, PC_PAD * dpr, PC_PAD * dpr);
+      paintOuterPill(c);
+    }
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.translate(W / 2, H / 2); ctx.scale(1, k); ctx.translate(-W / 2, -H / 2);
+    ctx.drawImage(pillCache, -PC_PAD, -PC_PAD, pillCache.width / dpr, pillCache.height / dpr);
+    ctx.restore();
+  }
+
+  // standard normal CDF, via an accurate erfc
+  function erfcApprox(z) {
+    const t = 1 / (1 + 0.5 * Math.abs(z));
+    const y = t * Math.exp(-z * z - 1.26551223 + t * (1.00002368 + t * (0.37409196 +
+      t * (0.09678418 + t * (-0.18628806 + t * (0.27886807 + t * (-1.13520398 +
+      t * (1.48851587 + t * (-0.82215223 + t * 0.17087277)))))))));
+    return z >= 0 ? y : 2 - y;
+  }
+  const Phi = x => 0.5 * erfcApprox(-x / Math.SQRT2);
+
+  // The ring shadow, drawn as many thin outlines of the pill's shape (grown or
+  // shrunk evenly), each as dark as a blurred ring would be at that distance.
+  // Matches the CSS .pill-shadow exactly and needs no canvas filters.
+  function paintRingShadow(ctx, x = 0, y = 0, w0 = W, h0 = H, strength = 1, drop = C.shadowDrop) {
+    if (!(C.shadowAlpha > 0) || strength <= 0) return;
+    const half = C.shadowRing / 2, sg = Math.max(0.5, C.shadowBlur);
+    ctx.save();
+    ctx.strokeStyle = `rgb(${C.shadowRgb})`;
+    ctx.lineWidth = 0.5;
+    for (let d = -(half + 3 * sg); d <= half + 3 * sg; d += 0.5) {
+      const a = strength * C.shadowAlpha * (Phi((half - d) / sg) - Phi((-half - d) / sg));
+      if (a < 0.001) continue;
+      const w = w0 + 2 * d, h = h0 + 2 * d;
+      if (w <= 1 || h <= 1) continue;
+      ctx.globalAlpha = a;
+      ctx.stroke(new Path2D(pillPath(x - d, y - d + drop, w, h)));
+    }
+    ctx.restore();
+  }
+
+  function paintOuterPill(ctx) {
+    const r = H / 2;
+    const pill = new Path2D(pillPath(0, 0, W, H));
+    paintRingShadow(ctx);
+    ctx.save();
+
+    // subtle side strokes (outside the pill only), same strength as the main pill's
+    ctx.save();
+    const outside = new Path2D(`M-50 -50 H${W + 50} V${H + 50} H-50 Z ${pillPath(0, 0, W, H)}`);
+    ctx.clip(outside, "evenodd");
+    ctx.fillStyle = C.sideStroke;
+    ctx.translate(-2, 0); ctx.fill(pill);
+    ctx.translate(4, 0);  ctx.fill(pill);
+    ctx.restore();
+
+    // fill
+    const g = ctx.createLinearGradient(0, 0, 0, H);
+    g.addColorStop(0, C.fillA);
+    g.addColorStop(1, C.fillB);
+    ctx.fillStyle = g;
+    ctx.fill(pill);
+
+    // Faint inner ring: built from thin concentric outlines, each a little further
+    // in and a little fainter, matching a soft 14px inset shadow. Every outline is
+    // the pill's own shape shrunk evenly, so the ring is the same all the way round
+    // (no darker spot at the rounded ends), and it needs no canvas filters or
+    // shadows, which Safari handles differently and which caused the dark ring.
+    ctx.save();
+    ctx.clip(pill);
+    ctx.strokeStyle = `rgb(${C.ringRgb})`;
+    ctx.lineWidth = 0.5;
+    const sigma = 7;                                         // 14px blur ≈ sigma 7
+    const erfc = z => { const t = 1 / (1 + 0.5 * z);         // complementary error fn
+      return t * Math.exp(-z * z - 1.26551223 + t * (1.00002368 + t * (0.37409196 +
+        t * (0.09678418 + t * (-0.18628806 + t * (0.27886807 + t * (-1.13520398 +
+        t * (1.48851587 + t * (-0.82215223 + t * 0.17087277))))))))); };
+    for (let d = 0.25; d < 24; d += 0.5) {
+      ctx.globalAlpha = C.ringAlpha * 0.5 * erfc(d / (sigma * Math.SQRT2));
+      if (ctx.globalAlpha < 0.002) break;
+      ctx.stroke(new Path2D(pillPath(d, d, W - 2 * d, H - 2 * d)));
+    }
+    ctx.restore();
+
+    // top + bottom gradient stroke
+    const crescent = new Path2D(pillPath(0, 0, W, H));
+    crescent.moveTo(r, 2);
+    crescent.lineTo(W - r, 2);
+    crescent.ellipse(W - r, H / 2, r, H / 2 - 2, 0, -Math.PI / 2, Math.PI / 2);
+    crescent.lineTo(r, H - 2);
+    crescent.ellipse(r, H / 2, r, H / 2 - 2, 0, Math.PI / 2, Math.PI * 1.5);
+    crescent.closePath();
+    // heavily blurred copy first (drawn as a shadow so it works in every browser),
+    // using a band as thick as the theme's glow thickness
+    const gt = C.glowThick;
+    const glowBand = new Path2D(pillPath(0, 0, W, H));
+    glowBand.moveTo(r, gt);
+    glowBand.lineTo(W - r, gt);
+    glowBand.ellipse(W - r, H / 2, r, H / 2 - gt, 0, -Math.PI / 2, Math.PI / 2);
+    glowBand.lineTo(r, H - gt);
+    glowBand.ellipse(r, H / 2, r, H / 2 - gt, 0, Math.PI / 2, Math.PI * 1.5);
+    glowBand.closePath();
+    ctx.save();
+    ctx.clip(pill);
+ctx.shadowColor = C.strokeGlow;           // matches the CSS glow's colour+brightness
+    ctx.shadowBlur = 16 * canvasDpr;         // ≈ CSS blur(8px)
+    ctx.shadowOffsetX = 10000 * canvasDpr;
+    ctx.translate(-10000, 0);
+    ctx.fillStyle = "#000";
+    ctx.fill(glowBand, "evenodd");
+    ctx.restore();
+
+    const sg = ctx.createLinearGradient(0, 0, W, 0);
+sg.addColorStop(0, C.strokeA);
+    sg.addColorStop(r / W, C.strokeB);
+    sg.addColorStop(1 - r / W, C.strokeB);
+    sg.addColorStop(1, C.strokeA);
+    ctx.fillStyle = sg;
+    ctx.fill(crescent, "evenodd");
+    ctx.restore();
+  }
+
+  let canvasDpr = 1;
+  function drawGlassLens(lx, ly, lw, lh, s, pc, sL) {
+    const key = [lx, ly, lw, lh, s, pc, sL].map(v => v.toFixed(3)).join();
+    if (key === lastKey) return;
+    lastKey = key;
+
+    const dpr = canvasDpr = Math.min(window.devicePixelRatio || 1, 3);
+
+    // Snap the canvas to the screen's pixel grid. Everything is then drawn at the
+    // same device pixels every frame, however the lens moves, so the icons and
+    // text inside never shimmer or shuffle by fractions of a pixel.
+    const cLeft = Math.floor((navVX + lx) * dpr) / dpr - navVX;   // canvas origin, container coords
+    const cTop  = Math.floor((navVY + ly) * dpr) / dpr - navVY;
+    const shiftX = lx - cLeft, shiftY = ly - cTop;
+    const band0 = clamp(GLASS_DEPTH, 1, Math.min(lw, lh) / 2);
+    const reach = GLASS_BEND * pc;
+    const O = Math.ceil((GLASS_BEND + 2) * dpr);          // margin so the rim can reach outside
+    const LW = Math.max(1, Math.ceil((lw + shiftX) * dpr)), LH = Math.max(1, Math.ceil((lh + shiftY) * dpr));
+    const SW = LW + 2 * O, SH = LH + 2 * O;
+
+    // buffers only grow, never reallocate while animating
+    if (srcCanvas.width < SW || srcCanvas.height < SH) {
+      srcCanvas.width = Math.max(srcCanvas.width, SW + 64);
+      srcCanvas.height = Math.max(srcCanvas.height, SH + 64);
+    }
+    if (lensCanvas.width < LW || lensCanvas.height < LH || lensCanvas.dataset.dpr != dpr) {
+      lensCanvas.width = Math.max(lensCanvas.width, LW + 64);
+      lensCanvas.height = Math.max(lensCanvas.height, LH + 64);
+      lensCanvas.dataset.dpr = dpr;
+      lensCanvas.style.width = lensCanvas.width / dpr + "px";
+      lensCanvas.style.height = lensCanvas.height / dpr + "px";
+    }
+    lensCanvas.style.left = `${-shiftX}px`;
+    lensCanvas.style.top  = `${-shiftY}px`;
+
+    // 1. draw the unbent lens contents, in container coordinates
+    // Fill with the page background first (rather than leaving it transparent black).
+    // The rim samples slightly outside the pill's own shapes, and without this its
+    // dispersed fringes pick up transparent-black there, which reads as a dark smudge
+    // in light mode. Filling with the real backdrop makes the rim bend the background
+    // itself, like real glass, and keeps the colour fringes clean in either theme.
+    sctx.setTransform(1, 0, 0, 1, 0, 0);
+    sctx.clearRect(0, 0, srcCanvas.width, srcCanvas.height);
+    sctx.fillStyle = C.bg;
+    sctx.fillRect(0, 0, srcCanvas.width, srcCanvas.height);
+    sctx.setTransform(dpr, 0, 0, dpr, O - cLeft * dpr, O - cTop * dpr);
+
+    drawOuterPillCopy(sctx, 1 - INNER_SHRINK * pc, REST_FILL + (1 - REST_FILL) * pc);
+
+    // the held pill's own ring shadow, falling on the pill below it
+    {
+      const si = C.lensShadowInset;
+      paintRingShadow(sctx, lx + si, ly + si, Math.max(1, lw - 2 * si), Math.max(1, lh - 2 * si), pc, C.lensShadowDrop);
+    }
+
+    sctx.save();
+    sctx.globalAlpha = 1 - pc;
+    sctx.fillStyle = C.restFillColor;
+    sctx.fill(new Path2D(pillPath(lx, ly, lw, lh)));
+    sctx.restore();
+
+    // blue icons + text, placed exactly where the (scaled) blue layer puts them
+    for (const part of getBlueParts()) {
+      // same place as the bar's (scaled) icons, then grown a further INNER_POP
+      // around each tab's own centre, so they swell in place without drifting
+      const k = 1 + INNER_POP * pc;
+      const cx0 = W / 2 + (PAD + part.center.x - W / 2) * sL;
+      const cy0 = H / 2 + (PAD + part.center.y - H / 2) * sL;
+      const toX = v => cx0 + (v - part.center.x) * sL * k;
+      const toY = v => cy0 + (v - part.center.y) * sL * k;
+      sctx.fillStyle = part.color;
+
+      // Snap origins to the screen's device pixel grid (the canvas itself is already
+      // aligned to it), so icon and text always land on whole pixels and can't
+      // flicker between two neighbouring pixels as the pop shrinks away.
+      const snapX = v => Math.round((navVX + v) * dpr) / dpr - navVX;
+      const snapY = v => Math.round((navVY + v) * dpr) / dpr - navVY;
+
+      sctx.save();
+      sctx.translate(snapX(toX(part.icon.x)), snapY(toY(part.icon.y)));
+      sctx.scale(part.icon.w * sL * k / part.vb.width, part.icon.h * sL * k / part.vb.height);
+      sctx.translate(-part.vb.x, -part.vb.y);
+      sctx.fill(part.path);
+      sctx.restore();
+
+      const size = part.size * sL * k;
+      sctx.font = `${part.weight} ${size}px ${part.family}`;
+      if ("letterSpacing" in sctx) sctx.letterSpacing = `${-0.01 * size}px`;
+      sctx.textBaseline = "alphabetic";
+      const m = sctx.measureText(part.text);
+      const asc = m.fontBoundingBoxAscent ?? m.actualBoundingBoxAscent;
+      const desc = m.fontBoundingBoxDescent ?? m.actualBoundingBoxDescent;
+      const baseline = toY(part.label.y) + (part.label.h * sL * k - (asc + desc)) / 2 + asc;
+      sctx.fillText(part.text, snapX(toX(part.label.x)), snapY(baseline));
+    }
+
+    // 2. bend the rim on the GPU and draw into the lens
+    const r = Math.min(lw, lh) / 2;
+    const band = clamp(GLASS_DEPTH, 1, r);
+    const ca = GLASS_CHROMA * pc;
+    const g = Math.max(0, Math.min(reach, band * 0.95 - ca * CHROMA_BLUE));  // leave room above green for blue
+
+    gl.bindTexture(gl.TEXTURE_2D, glTex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, srcCanvas);
+    gl.viewport(0, lensCanvas.height - LH, LW, LH);   // top-left corner of the canvas
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.uniform2f(U.uTexSize, srcCanvas.width, srcCanvas.height);
+    gl.uniform2f(U.uLens, lw, lh);
+    gl.uniform1f(U.uDpr, dpr);
+    gl.uniform1f(U.uO, O);
+    gl.uniform1f(U.uTop, lensCanvas.height);
+    gl.uniform1f(U.uBand, band);
+    gl.uniform1f(U.uG, g);
+    gl.uniform1f(U.uCa, ca);
+    gl.uniform1f(U.uBlue, CHROMA_BLUE);
+    gl.uniform2f(U.uShift, shiftX, shiftY);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+  }
+
+  let navVX = 0, navVY = 0;   // component's position in the viewport, for pixel snapping
+  function measureNavPos() {
+    const r = nav.getBoundingClientRect();
+    navVX = r.left; navVY = r.top;
+    lastKey = "";
+  }
+  addEventListener("scroll", () => { measureNavPos(); render(); }, { passive: true });
+  addEventListener("resize", measureNavPos);
+
+  let W, H, gap, slotW, slotH;
+  function measure() {
+    measureNavPos();
+    W = nav.clientWidth;
+    H = nav.clientHeight;
+    gap = parseFloat(getComputedStyle(nav).getPropertyValue("--gap")) || 0;
+    slotW = (W - 2 * PAD - (n - 1) * gap) / n;
+    slotH = H - 2 * PAD;
+    lastKey = "";
+    blueLayoutDirty = true;
+  }
+
+  // springs: x = lens position (in tab units), p = press amount (0 → 1)
+  let selected = 0;
+  let x = 0, vx = 0, xTarget = 0, squish = 0;
+  let p = 0, vp = 0, pTarget = 0;
+  let q = 0, vq = 0, qTarget = 0;
+  let lensCycle = false;   // after any release: the pill completes a full pop, then shrinks
+  let pressed = false, dragging = false, startX = 0;
+
+  const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+
+  /* Eases the last few percent of a spring into rest. A critically damped spring
+     only ever approaches its target, so its final moments are a long crawl of
+     sub-pixel changes. Different layers (lens edges, canvas text, DOM text) round
+     to whole pixels at different moments during that crawl, which reads as jitter.
+     This remaps the displayed value so the final stretch decelerates smoothly
+     (a cubic that matches the spring's value and slope at SETTLE_ZONE) and lands
+     on exactly 0 (or 1), with zero velocity, well before the spring itself stops. */
+  const SETTLE_ZONE = 0.05;
+  const softEnd = v => {
+    const u = SETTLE_ZONE;
+    const f = t => t < u ? (2 * t * t) / u - (t * t * t) / (u * u) : t;
+    const c = clamp(v, 0, 1);
+    const r = c < 0.5 ? f(c) : 1 - f(1 - c);
+    return r < 0.0005 ? 0 : r > 0.9995 ? 1 : r;
+  };
+
+  /* ---- Theme: read the CSS custom properties so canvas drawing matches the DOM ---- */
+  let C = {};
+  function readTheme() {
+    const cs = getComputedStyle(document.documentElement);
+    const v = name => cs.getPropertyValue(name).trim();
+    C = {
+      fillA: v("--pill-fill-a"), fillB: v("--pill-fill-b"),
+      strokeA: v("--pill-stroke-a"), strokeB: v("--pill-stroke-b"), strokeGlow: v("--pill-stroke-glow"),
+sideStroke: v("--pill-side-stroke"), sideStrokeAlpha: parseFloat(v("--pill-side-stroke-alpha")), ring: v("--pill-ring"),
+      sideStrokeRgb: v("--pill-side-stroke-rgb"), ringRgb: v("--pill-ring-rgb"),
+      bg: v("--bg"),
+      glowThick: parseFloat(v("--pill-glow-thickness")) || 2,
+      shadowRgb: v("--pill-shadow-rgb"), shadowAlpha: parseFloat(v("--pill-shadow-alpha")) || 0,
+      shadowRing: parseFloat(v("--pill-shadow-ring")) || 0,
+      shadowBlur: parseFloat(v("--pill-shadow-blur")) || 0,
+      shadowDrop: parseFloat(v("--pill-shadow-drop")) || 0,
+      lensShadowDrop: parseFloat(v("--lens-shadow-drop")) || 0,
+      lensShadowInset: parseFloat(v("--lens-shadow-inset")) || 0,
+      ringAlpha: parseFloat((v("--pill-ring").match(/([\d.]+)\s*\)\s*$/) || [0, 0.12])[1]),
+      restFillColor: v("--lens-rest-fill")
+    };
+    lastKey = ""; pillCacheKey = "";     // force the canvas to redraw with the new colours
+  }
+  const themeToggle = document.querySelector(".theme-toggle");
+  function setTheme(light) {
+    document.documentElement.dataset.theme = light ? "light" : "dark";
+    themeToggle.textContent = light ? "☀️ Light" : "🌙 Dark";
+    readTheme();
+    render();
+  }
+  themeToggle.addEventListener("click", () => {
+    setTheme(document.documentElement.dataset.theme !== "light");
+  });
+  readTheme();
+  const slotCenter = i => PAD + i * (slotW + gap) + slotW / 2;
+
+  function pillPath(x, y, w, h) {
+    const r = Math.min(w, h) / 2;
+    return `M${x + r} ${y} H${x + w - r} A${r} ${r} 0 0 1 ${x + w} ${y + r} ` +
+           `V${y + h - r} A${r} ${r} 0 0 1 ${x + w - r} ${y + h} ` +
+           `H${x + r} A${r} ${r} 0 0 1 ${x} ${y + h - r} ` +
+           `V${y + r} A${r} ${r} 0 0 1 ${x + r} ${y} Z`;
+  }
+
+  function render() {
+    // p = how pressed the bar is (follows your finger)
+    // q = how popped the selection pill is (can run its own full cycle on a tap)
+    // (both eased into rest by softEnd so the end of a shrink stops cleanly)
+    const pd = softEnd(p), qd = softEnd(q);
+    const s  = 1 + BAR_POP * pd;             // bar + its icons and text
+    const sL = 1 + BAR_POP * qd;             // the selection pill and what's inside it
+    const pc = qd;                           // glass look of the selection pill
+
+    // outer pill + content grow together
+    bar.style.transform = content.style.transform = `scale(${s})`;
+
+    // liquid stretch while sliding
+    const sq = squish;
+    let lw = slotW * sL * (1 + LENS_POP_W * qd) * (1 + sq);
+    let lh = slotH * sL * (1 + LENS_POP_H * qd) * (1 - sq * (SQUISH_MAX_H / SQUISH_MAX_W));
+    // placed as the fully-grown bar would place it, so a tap pops out to exactly
+    // the same spot and spread as a hold, even if the bar itself barely grew
+    const cx = W / 2 + (slotCenter(x) - W / 2) * sL;
+    lastCx = cx; lastSL = sL;
+    let lx = cx - lw / 2;
+    let ly = H / 2 - lh / 2;
+
+    // Snap each edge of the pill to the screen's pixel grid on its own. Otherwise
+    // the browser rounds its position and its size separately, and during the slow
+    // tail of a shrink the right/bottom edges flick back and forth by a pixel,
+    // which reads as jitter. Snapped edges only ever step one way as it shrinks.
+    {
+      const d = window.devicePixelRatio || 1;
+      const snap = (v, o) => Math.round((o + v) * d) / d - o;
+      const L = snap(lx, navVX), R = snap(lx + lw, navVX);
+      const T = snap(ly, navVY), B = snap(ly + lh, navVY);
+      lx = L; lw = Math.max(1, R - L);
+      ly = T; lh = Math.max(1, B - T);
+    }
+
+    {
+      const t = C.shadowRing / 2, si = C.lensShadowInset;
+      Object.assign(lensShadow.style, {
+        left: `${lx + si - t}px`, top: `${ly + si - t}px`,
+        width: `${Math.max(1, lw - 2 * si + 2 * t)}px`, height: `${Math.max(1, lh - 2 * si + 2 * t)}px`,
+        opacity: pc
+      });
+    }
+
+    Object.assign(lens.style, {
+      left: `${lx}px`, top: `${ly}px`, width: `${lw}px`, height: `${lh}px`,
+// just the two faint side strokes; no outer blur shadow around the held pill
+      boxShadow: `-2px 0 0 rgba(${C.sideStrokeRgb},${C.sideStrokeAlpha * pc}), 2px 0 0 rgba(${C.sideStrokeRgb},${C.sideStrokeAlpha * pc})`
+    });
+
+    // copy of the outer pill, lined up with where the bar sits at rest, shrinking as the press builds
+    Object.assign(copy.style, {
+      left: `${-lx}px`, top: `${-ly}px`, width: `${W}px`, height: `${H}px`,
+      transform: `scale(1, ${1 - INNER_SHRINK * pc})`
+    });
+
+    glass.style.opacity = pc;
+    dark.style.opacity  = 1 - pc;
+
+    // lens shape in the bar's own (unscaled) coordinates
+    const hx = (lx - W / 2) / s + W / 2;
+    const hy = (ly - H / 2) / s + H / 2;
+    const hole = (ox, oy) =>
+      `path(evenodd, "M-80 -80 H${W + 80} V${H + 80} H-80 Z ${pillPath(hx - ox, hy - oy, lw / s, lh / s)}")`;
+
+    // white icons + text are hidden inside the lens (the blue copy shows there instead)
+    content.style.clipPath = hole(PAD, PAD);
+
+    // outer pill fill inside the lens: 10% at rest, full when held, fading between the two
+    copy.style.visibility = "visible";
+    copy.style.opacity = REST_FILL + (1 - REST_FILL) * pc;
+    // the lens shape is always cut out of the scaled outer pill (the copy above fills it instead)
+    bar.style.clipPath = hole(0, 0);
+
+    // blue icons + text: placed where the selection pill's own scale puts them
+    // (matches the canvas), clipped by the lens
+    Object.assign(blue.style, {
+      left: `${PAD - lx}px`, top: `${PAD - ly}px`,
+      width: `${W - 2 * PAD}px`, height: `${H - 2 * PAD}px`,
+      transform: `scale(${sL})`
+    });
+
+    // The lens contents are always drawn by the canvas (bent while popped, plain at
+    // rest), so there's no hand-off between two renderers at the end of a shrink
+    // for the icon to jump on. The DOM layers are only the fallback without WebGL.
+    if (glReady) {
+      drawGlassLens(lx, ly, lw, lh, s, pc, sL);
+      lensCanvas.style.display = "block";
+      lensContent.style.opacity = "0";
+    } else {
+      // No WebGL: the same pill, drawn by the DOM layers instead of the canvas.
+      // Size, pop, squish, colour swap, fills, strokes and shadows all match;
+      // only the edge bend and rainbow fringe are left out.
+      lensCanvas.style.display = "none";
+      lensContent.style.opacity = "1";
+      lastKey = "";
+      // icons + text inside the held pill swell a further INNER_POP around each
+      // tab's own centre, like the canvas version
+      const k = 1 + INNER_POP * pc;
+      const tf = k === 1 ? "" : `scale(${k})`;
+      for (const t of blueTabs) if (t.style.transform !== tf) t.style.transform = tf;
+    }
+  }
+
+  /* ---- Animation loop ---- */
+  let raf = null, last;
+  function tick(t) {
+    const dt = Math.min((t - (last ?? t)) / 1000, 1 / 30);
+    last = t;
+
+    // tap cycle: once the pill is fully popped, it shrinks back (unless a finger is holding it)
+    if (lensCycle && q >= 0.97 && !pressed) qTarget = 0;
+
+    if (reduceMotion.matches) {
+      x = xTarget; p = pTarget; q = qTarget; vx = vp = vq = 0; squish = 0;
+      if (lensCycle) { qTarget = q = 0; lensCycle = false; }
+    } else {
+      // slide: just under critical damping, so it glides in with the faintest settle
+      vx += ((xTarget - x) * 300 - vx * 32) * dt;  x += vx * dt;
+      // stretch follows speed through a low-pass, so uneven pointer events don't make it wobble
+      const sqTarget = Math.min(Math.abs(vx) * 0.03, SQUISH_MAX_W);
+      squish += (sqTarget - squish) * (1 - Math.exp(-dt * 14));
+      // press grow/shrink: critically damped, so it eases in and settles with no bounce
+      vp += ((pTarget - p) * 420 - vp * 41) * dt;  p += vp * dt;
+      if (p < 0) { p = 0; vp = 0; }
+      if (p > 1) { p = 1; vp = 0; }
+      vq += ((qTarget - q) * 420 - vq * 41) * dt;  q += vq * dt;
+      if (q < 0) { q = 0; vq = 0; }
+      if (q > 1) { q = 1; vq = 0; }
+    }
+    if (lensCycle && qTarget === 0 && q < 0.002) {        // cycle finished
+      lensCycle = false;
+      if (pressed) qTarget = 1;                           // still holding: pop up as a normal hold
+    }
+    render();
+
+    const settled = Math.abs(xTarget - x) < 0.001 && Math.abs(vx) < 0.01 &&
+                    Math.abs(pTarget - p) < 0.001 && Math.abs(vp) < 0.01 &&
+                    Math.abs(qTarget - q) < 0.001 && Math.abs(vq) < 0.01 && !lensCycle;
+    if (settled && !pressed && squish < 0.001) {
+      x = xTarget; p = pTarget; q = qTarget; vx = vp = vq = 0; squish = 0;
+      render();
+      raf = null; last = undefined;
+      return;
+    }
+    raf = requestAnimationFrame(tick);
+  }
+  const kick = () => { if (!raf) { last = undefined; raf = requestAnimationFrame(tick); } };
+
+  /* ---- Selection ---- */
+  function select(i, focus = false) {
+    xTarget = i;
+    if (i !== selected) {
+      selected = i;
+      tabs.forEach((t, j) => {
+        t.setAttribute("aria-selected", j === i);
+        t.tabIndex = j === i ? 0 : -1;
+      });
+      nav.dispatchEvent(new CustomEvent("tabchange", { detail: { index: i } }));
+    }
+    if (focus) tabs[i].focus();
+    kick();
+  }
+
+  function indexAt(clientX) {
+    const rect = nav.getBoundingClientRect();
+    const s = 1 + BAR_POP * softEnd(p);
+    const local = (clientX - rect.left - W / 2) / s + W / 2;
+    return clamp((local - PAD - slotW / 2) / (slotW + gap), 0, n - 1);
+  }
+
+  /* ---- Press, hold & drag ---- */
+  let grabOffset = 0;         // pill centre minus pointer, fixed when a drag starts
+  let lastCx = 0, lastSL = 1; // where the pill centre was last drawn
+  nav.addEventListener("pointerdown", e => {
+    if (e.button !== 0) return;
+    pressed = true; dragging = false; startX = e.clientX;
+    nav.setPointerCapture(e.pointerId);
+    xTarget = Math.round(indexAt(e.clientX));
+    pTarget = 1;                          // the bar follows the press
+    qTarget = 1;                          // and so does the pill, even mid tap-cycle
+    kick();
+  });
+
+  nav.addEventListener("pointermove", e => {
+    if (!pressed) return;
+    const px = e.clientX - nav.getBoundingClientRect().left;
+    if (!dragging && Math.abs(e.clientX - startX) > 6) {
+      dragging = true;
+      // keep the exact spot you grabbed under the pointer (measured from where you pressed)
+      grabOffset = lastCx - (startX - nav.getBoundingClientRect().left);
+    }
+    if (dragging) {
+      const cx = px + grabOffset;
+      xTarget = clamp(((cx - W / 2) / lastSL + W / 2 - PAD - slotW / 2) / (slotW + gap), 0, n - 1);
+      kick();
+    }
+  });
+
+  nav.addEventListener("pointerup", () => {
+    if (!pressed) return;
+    pressed = false; dragging = false;
+    pTarget = 0;
+    // Tap, quick grab-and-slide or long hold: the pill always finishes its full
+    // pop before shrinking back, however short the press. If it's already fully
+    // popped (a long hold), it just shrinks. Pressing again mid-cycle starts a fresh pop.
+    lensCycle = true;
+    qTarget = 1;
+    select(Math.round(xTarget));
+  });
+
+  nav.addEventListener("pointercancel", () => {
+    pressed = false; dragging = false;
+    pTarget = 0; xTarget = selected;
+    lensCycle = false; qTarget = 0;
+    kick();
+  });
+
+  /* ---- Keyboard ---- */
+  tabs.forEach((t, i) => t.addEventListener("click", e => {
+    if (e.detail === 0) select(i); // Enter / Space
+  }));
+
+  nav.addEventListener("keydown", e => {
+    if (e.key === "ArrowRight") select((selected + 1) % n, true);
+    if (e.key === "ArrowLeft")  select((selected - 1 + n) % n, true);
+    if (e.key === "Home") select(0, true);
+    if (e.key === "End")  select(n - 1, true);
+  });
+
+  new ResizeObserver(() => { measure(); render(); }).observe(nav);
+  measure();
+  render();
+})();
+</script>
+</body>
+</html>
