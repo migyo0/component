@@ -3,7 +3,18 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="color-scheme" content="light dark" />
 <title>Liquid Glass Tabs</title>
+<script>
+  // Match the system's light/dark setting before the first paint, so there's no flash.
+  // (For testing, ?theme=light or ?theme=dark forces one and ignores the system.)
+  (() => {
+    const forced = (location.search.match(/[?&]theme=(light|dark)\b/) || [])[1];
+    const light = forced ? forced === "light" : matchMedia("(prefers-color-scheme: light)").matches;
+    document.documentElement.dataset.theme = light ? "light" : "dark";
+    if (forced) document.documentElement.dataset.themeForced = "";
+  })();
+</script>
 <style>
   :root {
     /* ---- dark theme (default) ---- */
@@ -37,6 +48,9 @@
     /* selection pill at rest, and its glow when held */
     --lens-rest-fill: rgba(0,0,0,0.3);
     --lens-held-stroke: rgba(255,255,255,0.20);
+    /* brightness layer shown while held (a 'screen' layer over the whole component) */
+    --press-glow: #ffffff;
+    --press-glow-alpha: 0.10;
   }
 
   :root[data-theme="light"] {
@@ -60,23 +74,7 @@
     --pill-shadow-alpha: 0.10;
     --lens-rest-fill: rgba(0,0,0,0.10);
     --lens-held-stroke: rgba(255,255,255,0.85);
-  }
-
-  /* theme toggle, top-right corner */
-  .theme-toggle {
-    position: fixed;
-    top: 16px;
-    right: 16px;
-    z-index: 10;
-    appearance: none;
-    border: 1px solid rgba(127,127,127,0.35);
-    background: rgba(127,127,127,0.12);
-    color: var(--label);
-    font: inherit;
-    font-size: 13px;
-    padding: 8px 14px;
-    border-radius: 999px;
-    cursor: pointer;
+    --press-glow-alpha: 0.14;         /* icons are dark here, so keep the lift gentle */
   }
 
   * { box-sizing: border-box; }
@@ -265,6 +263,21 @@ box-shadow:
       inset 0 0 14px var(--pill-ring);
   }
 
+  /* ---------- Held brightness layer ----------
+     One screen layer over everything (pill, lens, icons, text). It's cut to the
+     outline of the bar plus the selection pill by the script, and its opacity is
+     driven by the script so it can fade in faster than it fades out. */
+  .press-glow {
+    position: absolute;
+    inset: -80px;              /* room for the pop, which reaches past the bar */
+    z-index: 4;
+    background: var(--press-glow);
+    mix-blend-mode: screen;
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+  }
+
   /* ---------- Tabs ---------- */
   .tabs {
     position: relative;
@@ -326,8 +339,6 @@ box-shadow:
 </head>
 <body>
 
-  <button class="theme-toggle" type="button" aria-label="Toggle light/dark theme">🌙 Dark</button>
-
   <div class="stage">
   <nav class="glass-tabs" aria-label="Main">
     <div class="bar pill-surface" aria-hidden="true"><span class="pill-shadow"></span><span class="pill-stroke glow"></span><span class="pill-stroke soft"></span><span class="pill-stroke"></span></div>
@@ -365,6 +376,8 @@ box-shadow:
         Profile
       </button>
     </div>
+
+    <div class="press-glow" aria-hidden="true"></div>
   </nav>
   </div>
 
@@ -384,6 +397,9 @@ box-shadow:
   const SQUISH_MAX_W = 0.22; // fast slides stretch the pill up to 22% wider…
   const SQUISH_MAX_H = 0.12; // …and up to 12% shorter
   const PAD = 8;
+  const SHIFT_MAX  = 2;      // px the whole component drifts toward the selection pill while it's expanded (at the far left/right tabs)
+  const BRIGHT_IN  = 26;     // brightness fades in quickly (per second; ~40ms to most of the way)…
+  const BRIGHT_OUT = 9;      // …and fades out a little slower (~110ms time constant)
 
   const stage   = document.querySelector(".stage");
   const nav     = document.querySelector(".glass-tabs");
@@ -395,6 +411,7 @@ box-shadow:
   const lensContent = nav.querySelector(".lens-content");
   const lensCanvas = nav.querySelector(".lens-canvas");
   const lensShadow = nav.querySelector(".lens-shadow");
+  const glow    = nav.querySelector(".press-glow");
   const content = nav.querySelector(".tabs");
   const tabs    = [...nav.querySelectorAll(".tab")];
 
@@ -712,7 +729,7 @@ sg.addColorStop(0, C.strokeA);
 
   let canvasDpr = 1;
   function drawGlassLens(lx, ly, lw, lh, s, pc, sL) {
-    const key = [lx, ly, lw, lh, s, pc, sL].map(v => v.toFixed(3)).join();
+    const key = [lx, ly, lw, lh, s, pc, sL, navVX].map(v => v.toFixed(3)).join();
     if (key === lastKey) return;
     lastKey = key;
 
@@ -789,7 +806,7 @@ sg.addColorStop(0, C.strokeA);
       // Snap origins to the screen's device pixel grid (the canvas itself is already
       // aligned to it), so icon and text always land on whole pixels and can't
       // flicker between two neighbouring pixels as the pop shrinks away.
-      const snapX = v => (Math.round((navVX + v * zs) * dprDev) / dprDev - navVX) / zs;
+      const snapX = v => (Math.round((baseVX + v * zs) * dprDev) / dprDev - baseVX) / zs;   // resting grid: glides with the drift
       const snapY = v => (Math.round((navVY + v * zs) * dprDev) / dprDev - navVY) / zs;
 
       sctx.save();
@@ -834,11 +851,23 @@ sg.addColorStop(0, C.strokeA);
   }
 
   let navVX = 0, navVY = 0;   // component's position in the viewport, for pixel snapping
+  let baseVX = 0;             // where it sits with no nudge applied
+  let shiftPx = 0;            // the nudge currently applied, in screen px
   function measureNavPos() {
     const r = nav.getBoundingClientRect();
+    baseVX = r.left - shiftPx;
     navVX = r.left; navVY = r.top;
     lastKey = "";
   }
+  // one place that writes the component's transform: nudge first, then the fit-to-window scale
+  function applyNavTransform() {
+    const t = [];
+    if (shiftPx) t.push(`translateX(${shiftPx}px)`);
+    if (zs !== 1) t.push(`scale(${zs})`);
+    nav.style.transform = t.join(" ");
+  }
+  // pointer x → design px, allowing for the fit scale (the nudge is ignored)
+  const toLocalX = clientX => (clientX - (nav.getBoundingClientRect().left - shiftPx)) / zs;
   addEventListener("scroll", () => { measureNavPos(); render(); }, { passive: true });
   addEventListener("resize", measureNavPos);
 
@@ -850,7 +879,7 @@ sg.addColorStop(0, C.strokeA);
   function fit() {
     const avail = document.documentElement.clientWidth - 2 * MARGIN;
     zs = clamp(avail / DESIGN_W, 0.05, 1);
-    nav.style.transform = zs === 1 ? "" : `scale(${zs})`;
+    applyNavTransform();
     stage.style.width  = `${DESIGN_W * zs}px`;
     stage.style.height = `${nav.offsetHeight * zs}px`;
   }
@@ -872,6 +901,7 @@ sg.addColorStop(0, C.strokeA);
   let x = 0, vx = 0, xTarget = 0, squish = 0;
   let p = 0, vp = 0, pTarget = 0;
   let q = 0, vq = 0, qTarget = 0;
+  let bt = 0;              // brightness layer amount (0 → 1), its own fast-in / slower-out envelope
   let lensCycle = false;   // after any release: the pill completes a full pop, then shrinks
   let pressed = false, dragging = false, startX = 0;
 
@@ -912,20 +942,22 @@ sideStroke: v("--pill-side-stroke"), sideStrokeAlpha: parseFloat(v("--pill-side-
       lensShadowDrop: parseFloat(v("--lens-shadow-drop")) || 0,
       lensShadowInset: parseFloat(v("--lens-shadow-inset")) || 0,
       ringAlpha: parseFloat((v("--pill-ring").match(/([\d.]+)\s*\)\s*$/) || [0, 0.12])[1]),
-      restFillColor: v("--lens-rest-fill")
+      restFillColor: v("--lens-rest-fill"),
+      glowAlpha: parseFloat(v("--press-glow-alpha")) || 0
     };
     lastKey = ""; pillCacheKey = "";     // force the canvas to redraw with the new colours
   }
-  const themeToggle = document.querySelector(".theme-toggle");
+  // The theme follows the system's light/dark setting, live (the page's <head> sets
+  // it before first paint; this keeps it in step if the system changes while open).
   function setTheme(light) {
     document.documentElement.dataset.theme = light ? "light" : "dark";
-    themeToggle.textContent = light ? "☀️ Light" : "🌙 Dark";
     readTheme();
     render();
   }
-  themeToggle.addEventListener("click", () => {
-    setTheme(document.documentElement.dataset.theme !== "light");
-  });
+  const systemLight = matchMedia("(prefers-color-scheme: light)");
+  const onSystemTheme = e => { if (!("themeForced" in document.documentElement.dataset)) setTheme(e.matches); };
+  systemLight.addEventListener ? systemLight.addEventListener("change", onSystemTheme)
+                               : systemLight.addListener(onSystemTheme);   // older Safari
   readTheme();
   const slotCenter = i => PAD + i * (slotW + gap) + slotW / 2;
 
@@ -945,6 +977,19 @@ sideStroke: v("--pill-side-stroke"), sideStrokeAlpha: parseFloat(v("--pill-side-
     const s  = 1 + BAR_POP * pd;             // bar + its icons and text
     const sL = 1 + BAR_POP * qd;             // the selection pill and what's inside it
     const pc = qd;                           // glass look of the selection pill
+
+    // The whole component drifts a little toward the selection pill while it's
+    // expanded: left when the pill is on the left, right when on the right, and
+    // following it as it's dragged. Deliberately not rounded to whole pixels, so
+    // the drift glides instead of stepping (the pixel snapping elsewhere is done on
+    // the component's own resting grid, so it moves with the drift rather than
+    // fighting it).
+    {
+      const nudge = SHIFT_MAX * (n > 1 ? 2 * x / (n - 1) - 1 : 0) * pc;    // design px
+      const px = nudge * zs;
+      if (px !== shiftPx) { shiftPx = px; applyNavTransform(); }
+      navVX = baseVX + shiftPx;
+    }
 
     // outer pill + content grow together
     bar.style.transform = content.style.transform = `scale(${s})`;
@@ -967,7 +1012,7 @@ sideStroke: v("--pill-side-stroke"), sideStrokeAlpha: parseFloat(v("--pill-side-
     {
       const d = window.devicePixelRatio || 1;
       const snap = (v, o) => (Math.round((o + v * zs) * d) / d - o) / zs;
-      const L = snap(lx, navVX), R = snap(lx + lw, navVX);
+      const L = snap(lx, baseVX), R = snap(lx + lw, baseVX);   // resting grid, so the drift carries it smoothly
       const T = snap(ly, navVY), B = snap(ly + lh, navVY);
       lx = L; lw = Math.max(1, R - L);
       ly = T; lh = Math.max(1, B - T);
@@ -1040,6 +1085,22 @@ sideStroke: v("--pill-side-stroke"), sideStrokeAlpha: parseFloat(v("--pill-side-
       const tf = k === 1 ? "" : `scale(${k})`;
       for (const t of blueTabs) if (t.style.transform !== tf) t.style.transform = tf;
     }
+
+    // Brightness layer: covers the (scaled) bar and the selection pill together as
+    // one shape, so the two never double up where they overlap.
+    {
+      const a = bt * C.glowAlpha;
+      if (a < 0.0005) {
+        if (glow.style.visibility !== "hidden") glow.style.visibility = "hidden";
+      } else {
+        const M = 80;                          // the layer's inset, so shapes are offset by this
+        const bw = W * s, bh = H * s;
+        glow.style.clipPath = `path("${pillPath(W / 2 - bw / 2 + M, H / 2 - bh / 2 + M, bw, bh)} ` +
+                              `${pillPath(lx + M, ly + M, lw, lh)}")`;
+        glow.style.opacity = a;
+        glow.style.visibility = "visible";
+      }
+    }
   }
 
   /* ---- Animation loop ---- */
@@ -1068,6 +1129,11 @@ sideStroke: v("--pill-side-stroke"), sideStrokeAlpha: parseFloat(v("--pill-side-
       if (q < 0) { q = 0; vq = 0; }
       if (q > 1) { q = 1; vq = 0; }
     }
+    // brightness: quick in while held, slower out after release
+    const bTarget = pressed ? 1 : 0;
+    if (reduceMotion.matches) bt = bTarget;
+    else bt += (bTarget - bt) * (1 - Math.exp(-dt * (bTarget > bt ? BRIGHT_IN : BRIGHT_OUT)));
+
     if (lensCycle && qTarget === 0 && q < 0.002) {        // cycle finished
       lensCycle = false;
       if (pressed) qTarget = 1;                           // still holding: pop up as a normal hold
@@ -1076,9 +1142,10 @@ sideStroke: v("--pill-side-stroke"), sideStrokeAlpha: parseFloat(v("--pill-side-
 
     const settled = Math.abs(xTarget - x) < 0.001 && Math.abs(vx) < 0.01 &&
                     Math.abs(pTarget - p) < 0.001 && Math.abs(vp) < 0.01 &&
-                    Math.abs(qTarget - q) < 0.001 && Math.abs(vq) < 0.01 && !lensCycle;
+                    Math.abs(qTarget - q) < 0.001 && Math.abs(vq) < 0.01 && !lensCycle &&
+                    Math.abs(bTarget - bt) < 0.002;
     if (settled && !pressed && squish < 0.001) {
-      x = xTarget; p = pTarget; q = qTarget; vx = vp = vq = 0; squish = 0;
+      x = xTarget; p = pTarget; q = qTarget; vx = vp = vq = 0; squish = 0; bt = bTarget;
       render();
       raf = null; last = undefined;
       return;
@@ -1103,9 +1170,8 @@ sideStroke: v("--pill-side-stroke"), sideStrokeAlpha: parseFloat(v("--pill-side-
   }
 
   function indexAt(clientX) {
-    const rect = nav.getBoundingClientRect();
     const s = 1 + BAR_POP * softEnd(p);
-    const local = ((clientX - rect.left) / zs - W / 2) / s + W / 2;
+    const local = (toLocalX(clientX) - W / 2) / s + W / 2;
     return clamp((local - PAD - slotW / 2) / (slotW + gap), 0, n - 1);
   }
 
@@ -1124,11 +1190,12 @@ sideStroke: v("--pill-side-stroke"), sideStrokeAlpha: parseFloat(v("--pill-side-
 
   nav.addEventListener("pointermove", e => {
     if (!pressed) return;
-    const px = (e.clientX - nav.getBoundingClientRect().left) / zs;
+    const px = toLocalX(e.clientX);
+
     if (!dragging && Math.abs(e.clientX - startX) > 6) {
       dragging = true;
       // keep the exact spot you grabbed under the pointer (measured from where you pressed)
-      grabOffset = lastCx - (startX - nav.getBoundingClientRect().left) / zs;
+      grabOffset = lastCx - toLocalX(startX);
     }
     if (dragging) {
       const cx = px + grabOffset;
