@@ -116,6 +116,8 @@ html.pv-lock { overflow: hidden; }
 .pv::-webkit-scrollbar { display: none; }
 .pv[hidden] { display: none; }
 .pv.is-open { overflow-y: auto; }
+/* Once open, the project page scrolls with the browser window (like the front page), so it runs under the browser bars. */
+.pv.is-doc { position: absolute; inset: 0 0 auto 0; height: auto; min-height: 100vh; min-height: 100lvh; overflow: visible; }
 /* The folder is drawn inside the scrolling page (not pinned to the screen and nudged by script), so it can never lag. */
 .pv-under, .pv-over { position: absolute; left: 0; top: 0; width: 100%; display: block; pointer-events: none; }
 .pv-under { z-index: 1; }
@@ -870,6 +872,7 @@ function mountProject(pv) {
 
   // ---- State. t: 0 closed (front page) → 1 open (project page).
   let t = 0, tTarget = 0, raf = 0, last = 0, closing = false, flyTimer = 0;
+  let docMode = false;        // open and scrolling with the window rather than inside the fixed box
   const CLOSE_MS = 250;
   let h0 = 0;                 // the front folder's hover peek when it was tapped; eased out early
   let scrollFrom = 0;         // project page scroll at the moment of closing, eased out by the travel
@@ -882,7 +885,7 @@ function mountProject(pv) {
   }
   function openFrame() {
     const r = slot.getBoundingClientRect(), s = r.width / 240;
-    return { x: r.left - BACK_X * s, y: r.top + pv.scrollTop - BACK_Y * s, s };
+    return { x: r.left - BACK_X * s, y: r.top + (docMode ? scrollY : pv.scrollTop) - BACK_Y * s, s };
   }
 
   function innerShadow(c, shape, dx, dy, sigma, color) {
@@ -1138,13 +1141,23 @@ function mountProject(pv) {
     render();
     if (t === tTarget) {
       raf = 0; last = 0;
-      if (t === 1) pv.classList.add("is-open");
+      if (t === 1) enterDoc();
       if (t === 0) finishClose();
       return;
     }
     raf = requestAnimationFrame(frame);
   }
   const kick = () => { if (!raf) raf = requestAnimationFrame(frame); };
+  function enterDoc() {
+    pv.classList.add('is-open');
+    if (docMode || closing) return;
+    docMode = true;
+    main.style.display = 'none';                 // the front page is hidden while a project is open, so the window scrolls the project
+    document.documentElement.classList.remove('pv-lock');
+    pv.classList.add('is-doc');
+    pv.scrollTop = 0;
+    window.scrollTo({ top: 0, left: 0, behavior: 'instant' });
+  }
 
   function open() {
     if (tTarget === 1 || closing) return;
@@ -1176,6 +1189,14 @@ function mountProject(pv) {
   function close() {
     if (tTarget === 0 || pv.hidden) return;
     cancelAnimationFrame(raf); raf = 0; last = 0;
+    if (docMode) {                               // back to the fixed box, at the same scroll position, so the fade looks the same
+      const keep = scrollY;
+      docMode = false;
+      main.style.display = '';
+      pv.classList.remove('is-doc');
+      document.documentElement.classList.add('pv-lock');
+      pv.scrollTop = keep;
+    }
     const r = link.getBoundingClientRect();
     window.scrollTo({ top: scrollY + r.top + r.height / 2 - innerHeight / 2, behavior: "instant" });
     tTarget = 0; closing = true;
@@ -1188,6 +1209,7 @@ function mountProject(pv) {
     pv.classList.remove("is-closing", "is-open");
     pv.scrollTop = 0;                            // reset while it still has a scroll box (hidden ones ignore this)
     pv.hidden = true;
+    docMode = false; main.style.display = ''; pv.classList.remove('is-doc');
     t = 0; closing = false;
     reveals.forEach((el) => el.classList.remove("is-in"));      // reset while hidden, so nothing flashes on the next open
     scrollFrom = 0; content.style.transform = "";
@@ -1244,6 +1266,7 @@ document.querySelectorAll(".pv[data-link]").forEach(mountProject);
       return baseline + m.actualBoundingBoxDescent;
     }
     function apply() {
+      if (!h1.offsetHeight) return;                          // front page hidden (a project is open): keep the last measurements
       if (!wide.matches) { list.style.removeProperty("--pad-top"); list.style.removeProperty("--pad-bottom"); return; }
       const last = list.lastElementChild;
       const below = last.getBoundingClientRect().bottom - labelInkBottom(last.querySelector(".label"));   // from the letters down to the item's end
