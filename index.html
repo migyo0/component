@@ -1303,7 +1303,7 @@ document.querySelectorAll(".pv[data-link]").forEach(mountProject);
   pop.innerHTML = "<small>London, England</small><span class=\"info-row\"><span class=\"info-time\"></span><i class=\"info-dot\"></i></span>";
   document.body.appendChild(pop);
   var DATES = { daywise: "20/06/26", symmetra: "14/04/26", flutter: "24/02/26", mosaic: "29/12/25", holoramic: "19/11/25" };
-  var capEl = pop.querySelector("small"), timeEl = pop.querySelector(".info-time"), dotEl = pop.querySelector(".info-dot"), btn = null, timer = 0, hideT = 0, openedAt = 0, hovering = false;
+  var capEl = pop.querySelector("small"), timeEl = pop.querySelector(".info-time"), dotEl = pop.querySelector(".info-dot"), btn = null, timer = 0, hideT = 0, openedAt = 0, hovering = false, MOBILE = matchMedia("(max-width: 760px)");
   function london() {
     var now = new Date();
     var f = new Intl.DateTimeFormat("en-GB", { timeZone: "Europe/London", hour: "2-digit", minute: "2-digit", hour12: false }).formatToParts(now);
@@ -1324,7 +1324,7 @@ document.querySelectorAll(".pv[data-link]").forEach(mountProject);
     if (key && DATES[key]) { capEl.textContent = "Date added"; timeEl.textContent = DATES[key]; dotEl.style.display = "none"; return; }
     capEl.textContent = "London, England"; dotEl.style.display = ""; timeEl.textContent = london();
   }
-  function open(b) { btn = b; tick(); place(); pop.classList.add("is-open"); clearInterval(timer); timer = setInterval(tick, 1000); clearTimeout(hideT); openedAt = Date.now(); hovering = !!(b.matches && b.matches(":hover")); if (!hovering) hideT = setTimeout(close, 3000); }
+  function open(b) { btn = b; tick(); place(); pop.classList.add("is-open"); clearInterval(timer); timer = setInterval(tick, 1000); clearTimeout(hideT); openedAt = Date.now(); hovering = !MOBILE.matches && !!(b.matches && b.matches(":hover")); if (MOBILE.matches) hideT = setTimeout(close, 2000); else if (!hovering) hideT = setTimeout(close, 3000); }
   function close() { clearTimeout(hideT); btn = null; pop.classList.remove("is-open"); clearInterval(timer); }
   document.addEventListener("click", function (e) {
     var a = e.target.closest && e.target.closest('a[href="#info"]');
@@ -1332,9 +1332,11 @@ document.querySelectorAll(".pv[data-link]").forEach(mountProject);
     if (!pop.contains(e.target)) close();
   }, true);
   document.addEventListener("pointerover", function (e) {
+    if (MOBILE.matches) return;
     if (btn && e.target.closest && e.target.closest('a[href="#info"]') === btn) { hovering = true; clearTimeout(hideT); }
   });
   document.addEventListener("pointerout", function (e) {
+    if (MOBILE.matches) return;
     if (!btn || !e.target.closest || e.target.closest('a[href="#info"]') !== btn) return;
     var to = e.relatedTarget;
     if (to && btn.contains(to)) return;
